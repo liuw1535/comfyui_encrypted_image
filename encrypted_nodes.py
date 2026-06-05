@@ -18,6 +18,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 XOR_KEY = b"my_secret_key"
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9_.-]+")
+_NUMBERED_NAME_RE = re.compile(r"^(?P<prefix>.+)_(?P<number>\d{3,})\.cimg$")
 
 
 def xor_data(data: bytes, key: bytes) -> bytes:
@@ -50,8 +51,20 @@ def _encrypted_path(filename: str) -> Path:
     return path
 
 
+def _filename_sort_key(filename: str):
+    """Sort encrypted images by their explicit number, then by name."""
+    match = _NUMBERED_NAME_RE.match(filename)
+    if match:
+        return (0, int(match.group("number")), filename)
+
+    return (1, filename)
+
+
 def _list_encrypted_files():
-    files = sorted(path.name for path in OUTPUT_DIR.glob("*.cimg") if path.is_file())
+    files = sorted(
+        (path.name for path in OUTPUT_DIR.glob("*.cimg") if path.is_file()),
+        key=_filename_sort_key,
+    )
     return files or [""]
 
 
@@ -92,15 +105,19 @@ def _open_folder(path: Path):
     return False, f"Unable to open system folder: {error}"
 
 
-def _next_encrypted_filename(prefix: str, batch_number: int) -> str:
-    """Return a non-existing encrypted filename for the current batch item."""
-    counter = 0
+def _next_encrypted_filename(prefix: str) -> str:
+    """Return the next non-existing encrypted filename as prefix_001.cimg."""
+    next_number = 1
+    for path in OUTPUT_DIR.glob("*.cimg"):
+        match = _NUMBERED_NAME_RE.match(path.name)
+        if match:
+            next_number = max(next_number, int(match.group("number")) + 1)
+
     while True:
-        suffix = f"_{counter:05}" if counter else ""
-        filename = f"{prefix}_{batch_number}{suffix}.cimg"
+        filename = f"{prefix}_{next_number:03}.cimg"
         if not _encrypted_path(filename).exists():
             return filename
-        counter += 1
+        next_number += 1
 
 
 def _image_to_png_bytes(image) -> bytes:
@@ -131,11 +148,11 @@ class SaveEncryptedImage:
         results = []
         prefix = _safe_component(filename_prefix)
 
-        for batch_number, image in enumerate(images):
+        for image in images:
             png_bytes = _image_to_png_bytes(image)
             encrypted = xor_data(png_bytes, XOR_KEY)
 
-            filename = _next_encrypted_filename(prefix, batch_number)
+            filename = _next_encrypted_filename(prefix)
             path = _encrypted_path(filename)
 
             with path.open("xb") as file:

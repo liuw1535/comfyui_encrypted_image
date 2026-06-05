@@ -4,6 +4,7 @@ import { api } from "../../scripts/api.js";
 const ENCRYPTED_NODE_TYPES = ["SaveEncryptedImage", "LoadEncryptedImagePreview"];
 const LOAD_NODE_TYPE = "LoadEncryptedImagePreview";
 const STYLE_ID = "encrypted-image-preview-style";
+const AUTO_REFRESH_INTERVAL_MS = 5000;
 
 function encryptedViewUrl(filename, download = false) {
     const params = new URLSearchParams({ filename });
@@ -20,6 +21,28 @@ function getFilenameWidget(node) {
 function currentFilename(node) {
     const widget = getFilenameWidget(node);
     return widget?.value || "";
+}
+
+function getNumericSuffix(filename) {
+    const match = filename.match(/_(\d{3,})\.cimg$/i);
+    return match ? Number.parseInt(match[1], 10) : Number.NEGATIVE_INFINITY;
+}
+
+function latestEncryptedFilename(files) {
+    const candidates = files.filter(Boolean);
+    if (!candidates.length) {
+        return "";
+    }
+
+    return candidates.reduce((latest, filename) => {
+        const latestNumber = getNumericSuffix(latest);
+        const currentNumber = getNumericSuffix(filename);
+        if (currentNumber !== latestNumber) {
+            return currentNumber > latestNumber ? filename : latest;
+        }
+
+        return filename.localeCompare(latest, undefined, { numeric: true }) > 0 ? filename : latest;
+    }, candidates[0]);
 }
 
 function redrawCanvas() {
@@ -52,7 +75,7 @@ async function getEncryptedFiles() {
     return data.files?.length ? data.files : [""];
 }
 
-async function refreshEncryptedFiles(node, selectFirst = false) {
+async function refreshEncryptedFiles(node, selectLatest = false) {
     const widget = getFilenameWidget(node);
     if (!widget) {
         return;
@@ -62,14 +85,43 @@ async function refreshEncryptedFiles(node, selectFirst = false) {
     const values = await getEncryptedFiles();
     widget.options.values = values;
 
-    if (selectFirst || !values.includes(previous)) {
-        widget.value = values[0] || "";
+    if (selectLatest || !values.includes(previous)) {
+        widget.value = latestEncryptedFilename(values);
     } else {
         widget.value = previous;
     }
 
     updateLoadNodePreview(node);
     redrawCanvas();
+}
+
+function stopAutoRefresh(node) {
+    if (node.encryptedAutoRefreshTimer) {
+        clearInterval(node.encryptedAutoRefreshTimer);
+        node.encryptedAutoRefreshTimer = null;
+    }
+}
+
+function setAutoRefresh(node, enabled) {
+    stopAutoRefresh(node);
+    if (!enabled) {
+        return;
+    }
+
+    refreshEncryptedFiles(node, true).catch((error) => {
+        console.error("Encrypted image auto refresh failed", error);
+    });
+
+    node.encryptedAutoRefreshTimer = setInterval(() => {
+        refreshEncryptedFiles(node, true).catch((error) => {
+            console.error("Encrypted image auto refresh failed", error);
+            stopAutoRefresh(node);
+            const widget = node.widgets?.find((item) => item.name === "auto refresh");
+            if (widget) {
+                widget.value = false;
+            }
+        });
+    }, AUTO_REFRESH_INTERVAL_MS);
 }
 
 function updateLoadNodePreview(node) {
@@ -309,6 +361,7 @@ app.registerExtension({
 
         const onNodeCreated = nodeType.prototype.onNodeCreated;
         const onExecuted = nodeType.prototype.onExecuted;
+        const onRemoved = nodeType.prototype.onRemoved;
 
         nodeType.prototype.onNodeCreated = function () {
             onNodeCreated?.apply(this, arguments);
@@ -328,7 +381,10 @@ app.registerExtension({
             }
 
             this.addWidget("button", "refresh", null, async () => {
-                await refreshEncryptedFiles(this, false);
+                await refreshEncryptedFiles(this, true);
+            });
+            this.addWidget("toggle", "auto refresh", false, (enabled) => {
+                setAutoRefresh(this, Boolean(enabled));
             });
             this.addWidget("button", "show folder", null, async () => {
                 await showEncryptedGallery(this);
@@ -342,6 +398,11 @@ app.registerExtension({
             this.addWidget("button", "download", null, () => {
                 downloadCurrentImage(this);
             });
+        };
+
+        nodeType.prototype.onRemoved = function () {
+            stopAutoRefresh(this);
+            onRemoved?.apply(this, arguments);
         };
 
         nodeType.prototype.onExecuted = function (message) {
