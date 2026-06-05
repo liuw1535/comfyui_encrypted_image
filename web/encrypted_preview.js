@@ -4,7 +4,7 @@ import { api } from "../../scripts/api.js";
 const ENCRYPTED_NODE_TYPES = ["SaveEncryptedImage", "LoadEncryptedImagePreview"];
 const LOAD_NODE_TYPE = "LoadEncryptedImagePreview";
 const STYLE_ID = "encrypted-image-preview-style";
-const AUTO_REFRESH_POLL_INTERVAL_MS = 5000;
+const AUTO_REFRESH_INTERVAL_MS = 5000;
 
 function encryptedViewUrl(filename, download = false) {
     const params = new URLSearchParams({ filename });
@@ -65,35 +65,24 @@ function setNodePreview(node, images) {
     redrawCanvas();
 }
 
-async function getEncryptedFileSnapshot() {
+async function getEncryptedFiles() {
     const response = await api.fetchApi("/encrypted_images");
     if (!response.ok) {
         throw new Error(await response.text());
     }
 
     const data = await response.json();
-    return {
-        files: data.files?.length ? data.files : [""],
-        signature: data.signature ?? "",
-    };
+    return data.files?.length ? data.files : [""];
 }
 
-async function getEncryptedFiles() {
-    return (await getEncryptedFileSnapshot()).files;
-}
-
-async function refreshEncryptedFiles(node, selectLatest = false, forcePreview = false) {
+async function refreshEncryptedFiles(node, selectLatest = false) {
     const widget = getFilenameWidget(node);
     if (!widget) {
-        return null;
+        return;
     }
 
     const previous = widget.value;
-    const snapshot = await getEncryptedFileSnapshot();
-    const values = snapshot.files;
-    if (node.encryptedDirectorySignature !== undefined) {
-        node.encryptedDirectorySignature = snapshot.signature;
-    }
+    const values = await getEncryptedFiles();
     widget.options.values = values;
 
     if (selectLatest || !values.includes(previous)) {
@@ -102,76 +91,37 @@ async function refreshEncryptedFiles(node, selectLatest = false, forcePreview = 
         widget.value = previous;
     }
 
-    if (forcePreview || widget.value !== previous) {
-        updateLoadNodePreview(node);
-    }
+    updateLoadNodePreview(node);
     redrawCanvas();
-    return snapshot;
 }
 
 function stopAutoRefresh(node) {
     if (node.encryptedAutoRefreshTimer) {
-        clearTimeout(node.encryptedAutoRefreshTimer);
+        clearInterval(node.encryptedAutoRefreshTimer);
         node.encryptedAutoRefreshTimer = null;
     }
 }
 
-function disableAutoRefresh(node) {
-    stopAutoRefresh(node);
-    const widget = node.widgets?.find((item) => item.name === "auto refresh");
-    if (widget) {
-        widget.value = false;
-    }
-}
-
-async function checkEncryptedDirectory(node) {
-    const snapshot = await getEncryptedFileSnapshot();
-    if (node.encryptedDirectorySignature === undefined) {
-        node.encryptedDirectorySignature = snapshot.signature;
-        return;
-    }
-
-    if (snapshot.signature === node.encryptedDirectorySignature) {
-        return;
-    }
-
-    node.encryptedDirectorySignature = snapshot.signature;
-    await refreshEncryptedFiles(node, true, true);
-}
-
-function scheduleAutoRefresh(node) {
-    node.encryptedAutoRefreshTimer = setTimeout(async () => {
-        node.encryptedAutoRefreshTimer = null;
-        try {
-            await checkEncryptedDirectory(node);
-        } catch (error) {
-            console.error("Encrypted image auto refresh failed", error);
-            disableAutoRefresh(node);
-            return;
-        }
-
-        const widget = node.widgets?.find((item) => item.name === "auto refresh");
-        if (widget?.value) {
-            scheduleAutoRefresh(node);
-        }
-    }, AUTO_REFRESH_POLL_INTERVAL_MS);
-}
-
-async function setAutoRefresh(node, enabled) {
+function setAutoRefresh(node, enabled) {
     stopAutoRefresh(node);
     if (!enabled) {
         return;
     }
 
-    node.encryptedDirectorySignature = undefined;
-    try {
-        await checkEncryptedDirectory(node);
-    } catch (error) {
+    refreshEncryptedFiles(node, true).catch((error) => {
         console.error("Encrypted image auto refresh failed", error);
-        disableAutoRefresh(node);
-        return;
-    }
-    scheduleAutoRefresh(node);
+    });
+
+    node.encryptedAutoRefreshTimer = setInterval(() => {
+        refreshEncryptedFiles(node, true).catch((error) => {
+            console.error("Encrypted image auto refresh failed", error);
+            stopAutoRefresh(node);
+            const widget = node.widgets?.find((item) => item.name === "auto refresh");
+            if (widget) {
+                widget.value = false;
+            }
+        });
+    }, AUTO_REFRESH_INTERVAL_MS);
 }
 
 function updateLoadNodePreview(node) {
@@ -431,7 +381,7 @@ app.registerExtension({
             }
 
             this.addWidget("button", "refresh", null, async () => {
-                await refreshEncryptedFiles(this, true, true);
+                await refreshEncryptedFiles(this, true);
             });
             this.addWidget("toggle", "auto refresh", false, (enabled) => {
                 setAutoRefresh(this, Boolean(enabled));
