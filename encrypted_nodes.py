@@ -56,14 +56,40 @@ def _list_encrypted_files():
 
 
 def _open_folder(path: Path):
-    """Open a folder with the operating system file browser."""
+    """Open a folder with the operating system file browser when available."""
     system = platform.system()
     if system == "Windows":
         os.startfile(path)
-    elif system == "Darwin":
+        return True, "Opened with Windows Explorer"
+
+    if system == "Darwin":
         subprocess.Popen(["open", str(path)])
-    else:
-        subprocess.Popen(["xdg-open", str(path)])
+        return True, "Opened with Finder"
+
+    # Hosted notebook environments (for example Kaggle) usually do not have a
+    # graphical file manager or text browser. Avoid spawning xdg-open there: it
+    # only prints noisy mailcap/browser errors and cannot show the remote folder.
+    if not os.environ.get("DISPLAY") and not os.environ.get("WAYLAND_DISPLAY"):
+        return False, "No graphical desktop is available; showing the in-browser gallery instead."
+
+    try:
+        process = subprocess.run(
+            ["xdg-open", str(path)],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except FileNotFoundError:
+        return False, "xdg-open is not installed; showing the in-browser gallery instead."
+    except subprocess.TimeoutExpired:
+        return True, "Opening folder with xdg-open"
+
+    if process.returncode == 0:
+        return True, "Opened with xdg-open"
+
+    error = (process.stderr or process.stdout or "xdg-open failed").strip()
+    return False, f"Unable to open system folder: {error}"
 
 
 def _next_encrypted_filename(prefix: str, batch_number: int) -> str:
@@ -162,11 +188,19 @@ async def encrypted_images(request):
 @routes.post("/open_encrypted_folder")
 async def open_encrypted_folder(request):
     try:
-        _open_folder(OUTPUT_DIR)
+        ok, message = _open_folder(OUTPUT_DIR)
     except Exception as error:
-        return web.Response(status=500, text=f"Unable to open encrypted image folder: {error}")
+        ok = False
+        message = f"Unable to open encrypted image folder: {error}"
 
-    return web.json_response({"ok": True})
+    return web.json_response(
+        {
+            "ok": ok,
+            "message": message,
+            "folder": str(OUTPUT_DIR),
+            "files": _list_encrypted_files(),
+        }
+    )
 
 
 @routes.get("/view_encrypted")
