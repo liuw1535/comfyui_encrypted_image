@@ -1,5 +1,8 @@
 import io
+import os
+import platform
 import re
+import subprocess
 from pathlib import Path
 
 import numpy as np
@@ -50,6 +53,17 @@ def _encrypted_path(filename: str) -> Path:
 def _list_encrypted_files():
     files = sorted(path.name for path in OUTPUT_DIR.glob("*.cimg") if path.is_file())
     return files or [""]
+
+
+def _open_folder(path: Path):
+    """Open a folder with the operating system file browser."""
+    system = platform.system()
+    if system == "Windows":
+        os.startfile(path)
+    elif system == "Darwin":
+        subprocess.Popen(["open", str(path)])
+    else:
+        subprocess.Popen(["xdg-open", str(path)])
 
 
 def _next_encrypted_filename(prefix: str, batch_number: int) -> str:
@@ -140,6 +154,21 @@ class LoadEncryptedImagePreview:
 routes = PromptServer.instance.routes
 
 
+@routes.get("/encrypted_images")
+async def encrypted_images(request):
+    return web.json_response({"files": _list_encrypted_files()})
+
+
+@routes.post("/open_encrypted_folder")
+async def open_encrypted_folder(request):
+    try:
+        _open_folder(OUTPUT_DIR)
+    except Exception as error:
+        return web.Response(status=500, text=f"Unable to open encrypted image folder: {error}")
+
+    return web.json_response({"ok": True})
+
+
 @routes.get("/view_encrypted")
 async def view_encrypted(request):
     filename = request.rel_url.query.get("filename")
@@ -157,10 +186,15 @@ async def view_encrypted(request):
     encrypted = path.read_bytes()
     decrypted = xor_data(encrypted, XOR_KEY)
 
+    headers = {"Cache-Control": "no-store"}
+    if request.rel_url.query.get("download"):
+        download_name = f"{path.stem}.png"
+        headers["Content-Disposition"] = f'attachment; filename="{download_name}"'
+
     return web.Response(
         body=decrypted,
         content_type="image/png",
-        headers={"Cache-Control": "no-store"},
+        headers=headers,
     )
 
 
