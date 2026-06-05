@@ -1,14 +1,16 @@
+import { app } from "../../scripts/app.js";
+
 app.registerExtension({
-name: "EncryptedImagePreview",
+    name: "EncryptedImagePreview",
 
-async beforeRegisterNodeDef(nodeType, nodeData, app) {
-
-    if (nodeData.name === "SaveEncryptedImage") {
+    async beforeRegisterNodeDef(nodeType, nodeData) {
+        if (!["SaveEncryptedImage", "LoadEncryptedImagePreview"].includes(nodeData.name)) {
+            return;
+        }
 
         const onExecuted = nodeType.prototype.onExecuted;
 
-        nodeType.prototype.onExecuted = function(message) {
-
+        nodeType.prototype.onExecuted = function (message) {
             if (onExecuted) {
                 onExecuted.apply(this, arguments);
             }
@@ -17,21 +19,13 @@ async beforeRegisterNodeDef(nodeType, nodeData, app) {
                 return;
             }
 
-            this.images = [];
-
-            for (const img of message.encrypted_images) {
-
+            this.images = message.encrypted_images.map((img) => {
                 const image = new Image();
-
-                image.src =
-                    `/view_encrypted?filename=${encodeURIComponent(img.filename)}`;
-
-                this.images.push(image);
-            }
+                image.src = `/view_encrypted?filename=${encodeURIComponent(img.filename)}`;
+                return image;
+            });
 
             app.graph.setDirtyCanvas(true);
         };
-    }
-}
-
+    },
 });
