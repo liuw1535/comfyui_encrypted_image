@@ -60,12 +60,31 @@ def _filename_sort_key(filename: str):
     return (1, filename)
 
 
-def _list_encrypted_files():
-    files = sorted(
-        (path.name for path in OUTPUT_DIR.glob("*.cimg") if path.is_file()),
-        key=_filename_sort_key,
+def _encrypted_directory_snapshot():
+    entries = []
+    for path in OUTPUT_DIR.glob("*.cimg"):
+        if not path.is_file():
+            continue
+
+        stat = path.stat()
+        entries.append(
+            {
+                "filename": path.name,
+                "mtime_ns": stat.st_mtime_ns,
+                "size": stat.st_size,
+            }
+        )
+
+    entries.sort(key=lambda entry: _filename_sort_key(entry["filename"]))
+    files = [entry["filename"] for entry in entries]
+    signature = "|".join(
+        f"{entry['filename']}:{entry['mtime_ns']}:{entry['size']}" for entry in entries
     )
-    return files or [""]
+    return {"files": files or [""], "signature": signature}
+
+
+def _list_encrypted_files():
+    return _encrypted_directory_snapshot()["files"]
 
 
 def _open_folder(path: Path):
@@ -199,7 +218,7 @@ routes = PromptServer.instance.routes
 
 @routes.get("/encrypted_images")
 async def encrypted_images(request):
-    return web.json_response({"files": _list_encrypted_files()})
+    return web.json_response(_encrypted_directory_snapshot())
 
 
 @routes.post("/open_encrypted_folder")
